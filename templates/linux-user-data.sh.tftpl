@@ -1,0 +1,209 @@
+#!/bin/bash
+set -euxo pipefail
+
+exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
+
+TOKEN=$(curl -sS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" || true)
+
+if [ -n "$TOKEN" ]; then
+  LINUX_PRIVATE_IP=$(curl -sS -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/local-ipv4)
+else
+  LINUX_PRIVATE_IP=$(curl -sS \
+    http://169.254.169.254/latest/meta-data/local-ipv4)
+fi
+
+dnf update -y
+dnf install -y python3 python3-pip git
+
+sudo -u ec2-user python3 -m pip install --user --upgrade pip
+sudo -u ec2-user python3 -m pip install --user ansible pywinrm
+
+sudo -u ec2-user /home/ec2-user/.local/bin/ansible-galaxy collection install ansible.windows community.windows
+
+cat >/etc/profile.d/ansible_path.sh <<'EOF'
+export PATH="$PATH:/home/ec2-user/.local/bin"
+EOF
+chmod 644 /etc/profile.d/ansible_path.sh
+
+install -d -o ec2-user -g ec2-user /home/ec2-user/ansible
+install -d -o ec2-user -g ec2-user /home/ec2-user/ansible/vars
+install -d -o ec2-user -g ec2-user /home/ec2-user/ansible/roles/account_policies/tasks
+install -d -o ec2-user -g ec2-user /home/ec2-user/ansible/roles/windows_firewall/tasks
+
+cat >/home/ec2-user/ansible/ansible.cfg <<'EOF'
+[defaults]
+inventory = ./inventory.ini
+host_key_checking = False
+interpreter_python = auto_silent
+EOF
+
+cat >/home/ec2-user/ansible/inventory.ini <<EOF
+[windows]
+winhost ansible_host=${windows_private_ip}
+
+[windows:vars]
+ansible_connection=winrm
+ansible_port=5986
+ansible_user=Administrator
+ansible_winrm_transport=ntlm
+ansible_winrm_server_cert_validation=ignore
+EOF
+
+cat >/home/ec2-user/ansible/site.yml <<'EOF'
+---
+- name: Demo CIS-like baseline for Windows Server 2022
+  hosts: windows
+  gather_facts: false
+  vars_files:
+    - ./vars/vars.yml
+
+  roles:
+    - account_policies
+    - windows_firewall
+EOF
+
+cat >/home/ec2-user/ansible/vars/vars.yml <<EOF
+password_history_size: 24
+maximum_password_age: 60
+minimum_password_age: 1
+minimum_password_length: 14
+
+lockout_bad_count: 10
+reset_lockout_count: 15
+lockout_duration: 15
+
+linux_control_node_ip: "$LINUX_PRIVATE_IP"
+rdp_allowed_remote_ip: "${rdp_allowed_remote_ip}"
+EOF
+
+cat >/home/ec2-user/ansible/roles/account_policies/tasks/main.yml <<'EOF'
+---
+- name: Ensure password history is set
+  community.windows.win_security_policy:
+    section: System Access
+    key: PasswordHistorySize
+    value: "{{ password_history_size }}"
+  tags:
+    - password
+    - demo
+    - section1
+
+- name: Ensure maximum password age is set
+  community.windows.win_security_policy:
+    section: System Access
+    key: MaximumPasswordAge
+    value: "{{ maximum_password_age }}"
+  tags:
+    - password
+    - demo
+    - section1
+
+- name: Ensure minimum password age is set
+  community.windows.win_security_policy:
+    section: System Access
+    key: MinimumPasswordAge
+    value: "{{ minimum_password_age }}"
+  tags:
+    - password
+    - demo
+    - section1
+
+- name: Ensure minimum password length is set
+  community.windows.win_security_policy:
+    section: System Access
+    key: MinimumPasswordLength
+    value: "{{ minimum_password_length }}"
+  tags:
+    - password
+    - demo
+    - section1
+
+- name: Ensure account lockout threshold is set
+  community.windows.win_security_policy:
+    section: System Access
+    key: LockoutBadCount
+    value: "{{ lockout_bad_count }}"
+  tags:
+    - lockout
+    - demo
+    - section1
+
+- name: Ensure reset lockout counter is set
+  community.windows.win_security_policy:
+    section: System Access
+    key: ResetLockoutCount
+    value: "{{ reset_lockout_count }}"
+  tags:
+    - lockout
+    - demo
+    - section1
+
+- name: Ensure lockout duration is set
+  community.windows.win_security_policy:
+    section: System Access
+    key: LockoutDuration
+    value: "{{ lockout_duration }}"
+  tags:
+    - lockout
+    - demo
+    - section1
+EOF
+
+cat >/home/ec2-user/ansible/roles/windows_firewall/tasks/main.yml <<'EOF'
+---
+- name: Enable Windows Firewall on all profiles
+  ansible.windows.win_firewall:
+    state: enabled
+    profiles:
+      - Domain
+      - Private
+      - Public
+  tags:
+    - firewall
+    - demo
+    - section9
+
+- name: Allow WinRM HTTPS only from Linux control node
+  community.windows.win_firewall_rule:
+    name: Allow WinRM 5986 from Linux control node
+    localport: 5986
+    protocol: tcp
+    direction: in
+    action: allow
+    enabled: true
+    state: present
+    remoteip: "{{ linux_control_node_ip }}"
+  tags:
+    - firewall
+    - demo
+    - section9
+
+- name: Allow RDP only from admin IP
+  community.windows.win_firewall_rule:
+    name: Allow RDP 3389 from admin IP
+    localport: 3389
+    protocol: tcp
+    direction: in
+    action: allow
+    enabled: true
+    state: present
+    remoteip: "{{ rdp_allowed_remote_ip }}"
+  tags:
+    - firewall
+    - demo
+    - section9
+EOF
+
+cat >/home/ec2-user/ansible/ping-windows.yml <<'EOF'
+---
+- name: Test Windows connectivity
+  hosts: windows
+  gather_facts: false
+  tasks:
+    - name: Win ping
+      ansible.windows.win_ping:
+EOF
+
+chown -R ec2-user:ec2-user /home/ec2-user/ansible
