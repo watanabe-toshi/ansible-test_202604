@@ -17,19 +17,24 @@ variable "vpc_cidr" {
 }
 
 variable "public_subnet_1_cidr" {
-  description = "Public subnet 1 CIDR"
+  description = "Linux public subnet CIDR"
   type        = string
   default     = "10.0.1.0/24"
 }
 
 variable "public_subnet_2_cidr" {
-  description = "Public subnet 2 CIDR"
+  description = "Windows public subnet CIDR"
   type        = string
   default     = "10.0.2.0/24"
 }
 
 variable "my_ip_cidr" {
-  description = "Your IP in CIDR format, example: 203.0.113.10/32"
+  description = "Your public IP in CIDR for AWS SG, example: 203.0.113.10/32"
+  type        = string
+}
+
+variable "rdp_allowed_remote_ip" {
+  description = "Your public IP for Windows Firewall RDP rule, example: 203.0.113.10"
   type        = string
 }
 
