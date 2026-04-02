@@ -81,3 +81,351 @@ Terraform の `user_data` によって、Linux インスタンス起動時に以
    └─ windows_firewall/
       └─ tasks/
          └─ main.yml
+```
+
+## 各ファイルの役割
+
+### `ansible.cfg`
+
+Ansible の基本設定ファイルです。
+
+このデモでは主に次を設定しています。
+
+- 使用する inventory の指定
+- host key checking の無効化
+- Python interpreter の設定
+
+実行しやすさを優先した最小構成です。
+
+---
+
+### `inventory.ini`
+
+Ansible の接続先定義です。  
+この構成では Windows ノードを 1 台定義しています。
+
+```ini
+[windows]
+winhost ansible_host=10.0.2.10
+
+[windows:vars]
+ansible_connection=winrm
+ansible_port=5986
+ansible_user=Administrator
+ansible_winrm_transport=ntlm
+ansible_winrm_server_cert_validation=ignore
+```
+
+この inventory で定義している内容は次の通りです。
+
+- `ansible_host`  
+  接続先 Windows の private IP
+
+- `ansible_connection=winrm`  
+  Windows 接続に WinRM を使う
+
+- `ansible_port=5986`  
+  HTTPS の WinRM ポート
+
+- `ansible_user=Administrator`  
+  接続ユーザ
+
+- `ansible_winrm_transport=ntlm`  
+  認証方式
+
+- `ansible_winrm_server_cert_validation=ignore`  
+  自己署名証明書を使うため、証明書検証を無効化
+
+---
+
+### `site.yml`
+
+メインの Playbook です。  
+このファイルでは、Windows ノードに対して複数の role を順に適用します。
+
+```yaml
+---
+- name: Demo CIS-like baseline for Windows Server 2022
+  hosts: windows
+  gather_facts: false
+  vars_files:
+    - ./vars/vars.yml
+
+  roles:
+    - account_policies
+    - windows_firewall
+```
+
+このファイル自体には詳細な設定を書かず、**何を適用するかだけを記述する薄い構成**にしています。  
+実際の設定内容は `roles/` 以下に分離しています。
+
+---
+
+### `vars/vars.yml`
+
+Playbook 内で利用する変数定義ファイルです。  
+環境ごとに変わる値や、ポリシー値をここにまとめています。
+
+```yaml
+password_history_size: 24
+maximum_password_age: 60
+minimum_password_age: 1
+minimum_password_length: 14
+
+lockout_bad_count: 10
+reset_lockout_count: 15
+lockout_duration: 15
+
+linux_control_node_ip: "10.0.1.10"
+rdp_allowed_remote_ip: "203.0.113.10"
+```
+
+変数を分離している理由は次の通りです。
+
+- Playbook の可読性を上げる
+- 値の変更をしやすくする
+- 環境差分を吸収しやすくする
+
+---
+
+## Roles の説明
+
+### `roles/account_policies`
+
+Windows のアカウントポリシー関連を設定する role です。
+
+主に次を設定します。
+
+- パスワード履歴
+- パスワード最大有効期限
+- パスワード最小有効期限
+- パスワード最小長
+- アカウントロックアウトしきい値
+- ロックアウト時間
+- ロックアウトカウンタのリセット時間
+
+この role は、**Windows のローカルセキュリティポリシーをコードで制御する例**としてわかりやすく、社内デモでも見せやすい内容です。
+
+---
+
+### `roles/windows_firewall`
+
+Windows Firewall の設定を行う role です。
+
+主に次を設定します。
+
+- Domain / Private / Public の各プロファイルで Firewall を有効化
+- WinRM 5986 を Linux control node からのみ許可
+- RDP 3389 を管理端末の IP からのみ許可
+
+この role は、**必要な通信だけを許可する**という考え方を説明しやすいため、デモ向きです。
+
+---
+
+## タグの使い方
+
+各 task にはタグを付けています。  
+そのため、設定カテゴリ単位で Playbook を実行できます。
+
+使用している主なタグは次の通りです。
+
+- `password`
+- `lockout`
+- `firewall`
+- `demo`
+
+### パスワード関連のみ実行
+
+```bash
+ansible-playbook site.yml --tags password -e 'ansible_password=<Administrator password>'
+```
+
+### ロックアウト関連のみ実行
+
+```bash
+ansible-playbook site.yml --tags lockout -e 'ansible_password=<Administrator password>'
+```
+
+### Firewall 関連のみ実行
+
+```bash
+ansible-playbook site.yml --tags firewall -e 'ansible_password=<Administrator password>'
+```
+
+タグを使うことで、社内デモ時に
+
+- 今回はパスワードポリシーだけ適用する
+- 次は Firewall のみ適用する
+
+といった見せ方がしやすくなります。
+
+---
+
+## Playbook 実行前提
+
+Ansible を実行する前に、次の条件を満たしている必要があります。
+
+- Windows インスタンスが起動している
+- Windows 側で WinRM over HTTPS が有効になっている
+- Linux から Windows の 5986/TCP へ到達できる
+- Windows の Administrator パスワードが分かっている
+- Linux 側に Ansible および必要コレクションがインストール済みである
+
+このデモ構成では、これらの多くは Terraform の `user_data` により初期セットアップされます。
+
+---
+
+## 動作確認用 Playbook
+
+`ping-windows.yml` は、Windows へ Ansible 接続できるか確認するための簡易 Playbook です。
+
+```yaml
+---
+- name: Test Windows connectivity
+  hosts: windows
+  gather_facts: false
+  tasks:
+    - name: Win ping
+      ansible.windows.win_ping:
+```
+
+これは ICMP の ping ではなく、**Ansible 経由で Windows モジュールが実行できるか**を確認するものです。
+
+実行例:
+
+```bash
+cd ~/ansible
+ansible-playbook ping-windows.yml -e 'ansible_password=<Administrator password>'
+```
+
+これが成功すれば、Linux から Windows に対して Ansible 実行が可能な状態です。
+
+---
+
+## 実行手順
+
+### 1. Linux に接続
+
+```bash
+ssh -i /path/to/key.pem ec2-user@<linux_public_ip>
+```
+
+### 2. Ansible ディレクトリへ移動
+
+```bash
+cd ~/ansible
+```
+
+### 3. 接続確認
+
+```bash
+ansible-playbook ping-windows.yml -e 'ansible_password=<Administrator password>'
+```
+
+### 4. Playbook 実行
+
+```bash
+ansible-playbook site.yml -e 'ansible_password=<Administrator password>'
+```
+
+---
+
+## 社内デモでの見せ方
+
+おすすめの流れは次の通りです。
+
+### 1. Before を見せる
+
+Windows 側で以下を確認します。
+
+- ローカルセキュリティポリシー
+- パスワードポリシー
+- アカウントロックアウトポリシー
+- Windows Firewall 状態
+- RDP / WinRM の制御状態
+
+### 2. Playbook を実行する
+
+Linux 側で以下を実行します。
+
+```bash
+ansible-playbook site.yml -e 'ansible_password=<Administrator password>'
+```
+
+### 3. After を見せる
+
+再度 Windows 側で設定値を確認し、Playbook によって状態が変更されたことを見せます。
+
+### 4. 再実行する
+
+もう一度同じ Playbook を実行し、大きな変更が発生しないことを見せます。
+
+これにより、次の点を説明しやすくなります。
+
+- 手作業ではなくコード化されている
+- 同じ状態に再現できる
+- 冪等性がある
+
+---
+
+## このデモで重要な Ansible の考え方
+
+### 1. 設定をコード化する
+
+GUI 操作を手順書として残すのではなく、Playbook と role で状態として定義します。
+
+### 2. role に分割する
+
+`site.yml` にすべてを書くのではなく、設定カテゴリごとに role に分けることで保守しやすくします。
+
+例:
+
+- `account_policies`
+- `windows_firewall`
+
+### 3. 値を変数化する
+
+設定値を `vars.yml` に逃がすことで、環境差分やポリシー変更に対応しやすくします。
+
+### 4. タグで実行範囲を絞る
+
+デモや検証時は、すべてを一気に適用するよりも、カテゴリごとに実行できる方がわかりやすくなります。
+
+---
+
+## 注意事項
+
+- この構成は **社内デモ向け** を想定しています
+- 自己署名証明書を利用しているため、証明書検証は無効化しています
+- 本番環境では証明書や秘密情報の扱いを見直す必要があります
+- `user_data` は初回起動時の初期セットアップ用途です
+- 実運用では playbook を Git 管理する方が保守しやすいです
+
+---
+
+## 今後の拡張案
+
+- role の追加
+  - user rights assignment
+  - audit policy
+  - administrative templates
+- private subnet 化
+- SSM Session Manager 利用
+- Ansible Vault の導入
+- CI/CD 連携
+- Playbook を Git から取得する構成への変更
+
+---
+
+## まとめ
+
+このデモの中心は、**Linux 上の Ansible から Windows Server の設定を自動適用すること**です。
+
+Terraform は AWS 基盤の作成と初期配置を担当し、Ansible は Windows の設定管理を担当します。
+
+この役割分担により、次を分離して考えられるようになります。
+
+- インフラ構築
+- 初期セットアップ
+- OS 設定適用
+
