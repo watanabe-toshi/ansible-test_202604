@@ -17,10 +17,12 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+# Latest Amazon Linux 2023 AMI
 data "aws_ssm_parameter" "amazon_linux_ami" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
+# Latest Windows Server 2022 AMI
 data "aws_ssm_parameter" "windows_ami" {
   name = "/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base"
 }
@@ -89,22 +91,10 @@ resource "aws_route_table_association" "public_2" {
   route_table_id = aws_route_table.public.id
 }
 
-# ----------------------------
-# Security Groups
-# ----------------------------
-
 resource "aws_security_group" "linux" {
   name        = "${var.project_name}-linux-sg"
-  description = "Linux control node"
+  description = "Linux control node security group"
   vpc_id      = aws_vpc.main.id
-
-  egress {
-    description = "all outbound"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 
   tags = {
     Name = "${var.project_name}-linux-sg"
@@ -113,20 +103,24 @@ resource "aws_security_group" "linux" {
 
 resource "aws_security_group" "windows" {
   name        = "${var.project_name}-windows-sg"
-  description = "Windows target node"
+  description = "Windows target node security group"
   vpc_id      = aws_vpc.main.id
-
-  egress {
-    description = "all outbound"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 
   tags = {
     Name = "${var.project_name}-windows-sg"
   }
+}
+
+resource "aws_vpc_security_group_egress_rule" "linux_all" {
+  security_group_id = aws_security_group.linux.id
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_egress_rule" "windows_all" {
+  security_group_id = aws_security_group.windows.id
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "linux_ssh_from_my_ip" {
@@ -135,8 +129,7 @@ resource "aws_vpc_security_group_ingress_rule" "linux_ssh_from_my_ip" {
   from_port         = 22
   to_port           = 22
   ip_protocol       = "tcp"
-
-  description = "SSH from my IP"
+  description       = "SSH from my IP"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "windows_rdp_from_my_ip" {
@@ -145,8 +138,7 @@ resource "aws_vpc_security_group_ingress_rule" "windows_rdp_from_my_ip" {
   from_port         = 3389
   to_port           = 3389
   ip_protocol       = "tcp"
-
-  description = "RDP from my IP"
+  description       = "RDP from my IP"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "windows_winrm_from_linux" {
@@ -155,20 +147,15 @@ resource "aws_vpc_security_group_ingress_rule" "windows_winrm_from_linux" {
   from_port                    = 5986
   to_port                      = 5986
   ip_protocol                  = "tcp"
-
-  description = "WinRM HTTPS from Linux control node"
+  description                  = "WinRM HTTPS from Linux control node"
 }
-
-# ----------------------------
-# EC2
-# ----------------------------
 
 locals {
   windows_user_data = templatefile("${path.module}/templates/windows-user-data.ps1.tftpl", {})
 
   linux_user_data = templatefile("${path.module}/templates/linux-user-data.sh.tftpl", {
     windows_private_ip    = aws_instance.windows.private_ip
-    rdp_allowed_remote_ip = var.my_ip_cidr
+    rdp_allowed_remote_ip = var.rdp_allowed_remote_ip
   })
 }
 
@@ -218,6 +205,4 @@ resource "aws_instance" "amazon_linux" {
     OS   = "Amazon Linux 2023"
     Role = "Ansible Control Node"
   }
-}
-  depends_on = [aws_instance.windows]
 }
