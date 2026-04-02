@@ -330,6 +330,257 @@ ansible-playbook site.yml -e 'ansible_password=<Administrator password>'
 
 ---
 
+## Windows 側の確認方法
+
+このデモでは、Playbook 実行の前後で Windows 側の設定状態を確認することで、  
+**Ansible によって設定が変更されたこと**と、**再実行しても同じ状態に収束すること**を確認できます。
+
+確認方法は、次の 2 通りがあります。
+
+- GUI で確認する方法
+- PowerShell / コマンドで確認する方法
+
+デモでは、まず GUI で状態を見せ、最後に PowerShell で証跡を出す流れがわかりやすいです。
+
+---
+
+### 1. ローカルセキュリティポリシーの確認
+
+#### GUI で確認
+
+`Win + R` を押して、以下を実行します。
+
+```text
+secpol.msc
+```
+
+`Local Security Policy` が開いたら、次を確認します。
+
+- `Security Settings` → `Account Policies` → `Password Policy`
+- `Security Settings` → `Account Policies` → `Account Lockout Policy`
+
+ここでは主に、次の項目を確認します。
+
+- Minimum password length
+- Maximum password age
+- Enforce password history
+- Account lockout threshold
+- Account lockout duration
+- Reset account lockout counter after
+
+#### コマンドで確認
+
+現在のローカルセキュリティポリシーをファイルへ出力します。
+
+```powershell
+secedit /export /cfg C:\Temp\secpol.cfg
+notepad C:\Temp\secpol.cfg
+```
+
+必要な項目だけ確認する場合は、以下を使います。
+
+```powershell
+Select-String -Path C:\Temp\secpol.cfg -Pattern `
+  "MinimumPasswordLength",
+  "MaximumPasswordAge",
+  "PasswordHistorySize",
+  "LockoutBadCount",
+  "LockoutDuration",
+  "ResetLockoutCount"
+```
+
+---
+
+### 2. Windows Firewall 状態の確認
+
+#### GUI で確認
+
+`Win + R` を押して、以下を実行します。
+
+```text
+wf.msc
+```
+
+`Windows Defender Firewall with Advanced Security` が開きます。  
+ここで、次を確認します。
+
+- Domain Profile が有効か
+- Private Profile が有効か
+- Public Profile が有効か
+
+#### PowerShell で確認
+
+```powershell
+Get-NetFirewallProfile | Select-Object Name, Enabled, DefaultInboundAction, DefaultOutboundAction
+```
+
+`Enabled` が `True` になっていることを確認します。
+
+---
+
+### 3. RDP の制御状態の確認
+
+#### GUI で確認
+
+`wf.msc` を開き、左ペインの `Inbound Rules` を確認します。
+
+Playbook で作成した、たとえば以下のようなルールを探します。
+
+- `Allow RDP 3389 from admin IP`
+
+確認ポイントは次の通りです。
+
+- ルールが有効
+- Action が Allow
+- Local Port が 3389
+- Remote Address が管理端末の IP に限定されている
+
+#### PowerShell で確認
+
+```powershell
+Get-NetFirewallRule -DisplayName "Allow RDP 3389 from admin IP"
+```
+
+ポート条件を確認する場合:
+
+```powershell
+Get-NetFirewallRule -DisplayName "Allow RDP 3389 from admin IP" |
+  Get-NetFirewallPortFilter
+```
+
+送信元 IP 制限を確認する場合:
+
+```powershell
+Get-NetFirewallRule -DisplayName "Allow RDP 3389 from admin IP" |
+  Get-NetFirewallAddressFilter
+```
+
+---
+
+### 4. WinRM の制御状態の確認
+
+#### GUI で確認
+
+`wf.msc` の `Inbound Rules` で、以下のような WinRM 用ルールを確認します。
+
+- `Allow WinRM 5986 from Linux control node`
+
+確認ポイントは次の通りです。
+
+- ルールが有効
+- Local Port が 5986
+- Remote Address が Linux control node の private IP に限定されている
+
+#### PowerShell で確認
+
+まず WinRM サービスの状態を確認します。
+
+```powershell
+Get-Service WinRM
+```
+
+`Status` が `Running` であることを確認します。
+
+次に、HTTPS listener を確認します。
+
+```powershell
+winrm enumerate winrm/config/listener
+```
+
+ここで、次を確認します。
+
+- `Transport = HTTPS`
+- `Port = 5986`
+
+Firewall ルールも確認できます。
+
+```powershell
+Get-NetFirewallRule -DisplayName "Allow WinRM 5986 from Linux control node"
+```
+
+ポート条件:
+
+```powershell
+Get-NetFirewallRule -DisplayName "Allow WinRM 5986 from Linux control node" |
+  Get-NetFirewallPortFilter
+```
+
+送信元 IP 制限:
+
+```powershell
+Get-NetFirewallRule -DisplayName "Allow WinRM 5986 from Linux control node" |
+  Get-NetFirewallAddressFilter
+```
+
+---
+
+## デモ時の確認の流れ
+
+おすすめの流れは次の通りです。
+
+### 1. Before を確認
+
+Windows 側で以下を確認します。
+
+- ローカルセキュリティポリシー
+- パスワードポリシー
+- アカウントロックアウトポリシー
+- Windows Firewall 状態
+- RDP / WinRM の制御状態
+
+### 2. Playbook を実行
+
+Linux 側で Playbook を実行します。
+
+```bash
+ansible-playbook site.yml -e 'ansible_password=<Administrator password>'
+```
+
+### 3. After を確認
+
+もう一度同じ画面とコマンドを使って確認し、設定が反映されていることを見せます。
+
+### 4. 再実行して冪等性を確認
+
+同じ Playbook をもう一度実行し、不要な変更が発生しないことを確認します。
+
+---
+
+## 確認コマンドまとめ
+
+```powershell
+# ローカルセキュリティポリシーを書き出す
+secedit /export /cfg C:\Temp\secpol.cfg
+
+# パスワード / ロックアウト関連だけ確認
+Select-String -Path C:\Temp\secpol.cfg -Pattern `
+  "MinimumPasswordLength",
+  "MaximumPasswordAge",
+  "PasswordHistorySize",
+  "LockoutBadCount",
+  "LockoutDuration",
+  "ResetLockoutCount"
+
+# Firewall プロファイル確認
+Get-NetFirewallProfile | Select-Object Name, Enabled, DefaultInboundAction, DefaultOutboundAction
+
+# RDP ルール確認
+Get-NetFirewallRule -DisplayName "Allow RDP 3389 from admin IP"
+Get-NetFirewallRule -DisplayName "Allow RDP 3389 from admin IP" | Get-NetFirewallPortFilter
+Get-NetFirewallRule -DisplayName "Allow RDP 3389 from admin IP" | Get-NetFirewallAddressFilter
+
+# WinRM サービス確認
+Get-Service WinRM
+
+# WinRM HTTPS listener 確認
+winrm enumerate winrm/config/listener
+
+# WinRM ルール確認
+Get-NetFirewallRule -DisplayName "Allow WinRM 5986 from Linux control node"
+Get-NetFirewallRule -DisplayName "Allow WinRM 5986 from Linux control node" | Get-NetFirewallPortFilter
+Get-NetFirewallRule -DisplayName "Allow WinRM 5986 from Linux control node" | Get-NetFirewallAddressFilter
+```
+
 ## 社内デモでの見せ方
 
 おすすめの流れは次の通りです。
