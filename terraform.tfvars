@@ -1,0 +1,6 @@
+aws_region             = "ap-northeast-1"
+project_name           = "demo"
+my_ip_cidr             = "123.123.123.123/32"
+key_name               = "your-keypair-name"
+linux_instance_type    = "t3.micro"
+windows_instance_type  = "t3.large"
