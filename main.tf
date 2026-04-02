@@ -163,6 +163,15 @@ resource "aws_vpc_security_group_ingress_rule" "windows_winrm_from_linux" {
 # EC2
 # ----------------------------
 
+locals {
+  windows_user_data = templatefile("${path.module}/templates/windows-user-data.ps1.tftpl", {})
+
+  linux_user_data = templatefile("${path.module}/templates/linux-user-data.sh.tftpl", {
+    windows_private_ip    = aws_instance.windows.private_ip
+    rdp_allowed_remote_ip = var.my_ip_cidr
+  })
+}
+
 resource "aws_instance" "windows" {
   ami                         = data.aws_ssm_parameter.windows_ami.value
   instance_type               = var.windows_instance_type
@@ -172,38 +181,8 @@ resource "aws_instance" "windows" {
   associate_public_ip_address = true
   get_password_data           = true
 
-  user_data = <<-EOF
-    <powershell>
-    $ErrorActionPreference = "Stop"
-
-    Set-Service -Name WinRM -StartupType Automatic
-    winrm quickconfig -q
-
-    $cert = New-SelfSignedCertificate `
-      -CertStoreLocation Cert:\LocalMachine\My `
-      -DnsName $env:COMPUTERNAME
-
-    New-Item `
-      -Path WSMan:\localhost\Listener `
-      -Address * `
-      -Transport HTTPS `
-      -CertificateThumbprint $cert.Thumbprint `
-      -Force
-
-    New-NetFirewallRule `
-      -DisplayName "WinRM HTTPS 5986" `
-      -Direction Inbound `
-      -Action Allow `
-      -Protocol TCP `
-      -LocalPort 5986 `
-      -Profile Any `
-      -ErrorAction SilentlyContinue
-
-    Set-Item -Path WSMan:\localhost\Service\AllowUnencrypted -Value $false
-
-    Restart-Service WinRM
-    </powershell>
-  EOF
+  user_data                   = local.windows_user_data
+  user_data_replace_on_change = true
 
   root_block_device {
     volume_size           = 50
@@ -225,68 +204,8 @@ resource "aws_instance" "amazon_linux" {
   key_name                    = var.key_name
   associate_public_ip_address = true
 
-  user_data = <<-EOF
-    #!/bin/bash
-    set -euxo pipefail
-
-    dnf update -y
-    dnf install -y python3 python3-pip git
-
-    sudo -u ec2-user python3 -m pip install --user --upgrade pip
-    sudo -u ec2-user python3 -m pip install --user ansible pywinrm
-
-    cat >/etc/profile.d/ansible_path.sh <<'PATH_EOF'
-    export PATH=$PATH:/home/ec2-user/.local/bin
-    PATH_EOF
-    chmod 644 /etc/profile.d/ansible_path.sh
-
-    sudo -u ec2-user mkdir -p /home/ec2-user/ansible
-
-    cat >/home/ec2-user/ansible/ansible.cfg <<'CFG_EOF'
-    [defaults]
-    inventory = ./inventory.ini
-    host_key_checking = False
-    interpreter_python = auto_silent
-    CFG_EOF
-
-    cat >/home/ec2-user/ansible/inventory.ini <<'INV_EOF'
-    [linux]
-    localhost ansible_connection=local
-
-    [windows]
-    winhost ansible_host=${aws_instance.windows.private_ip}
-
-    [windows:vars]
-    ansible_connection=winrm
-    ansible_port=5986
-    ansible_user=Administrator
-    ansible_winrm_transport=ntlm
-    ansible_winrm_server_cert_validation=ignore
-    # 実行時に ansible_password を渡す
-    INV_EOF
-
-    cat >/home/ec2-user/ansible/ping-linux.yml <<'PLAY1_EOF'
-    - name: Test Linux
-      hosts: linux
-      gather_facts: false
-      tasks:
-        - name: Ping localhost
-          ansible.builtin.ping:
-    PLAY1_EOF
-
-    cat >/home/ec2-user/ansible/ping-windows.yml <<'PLAY2_EOF'
-    - name: Test Windows
-      hosts: windows
-      gather_facts: false
-      tasks:
-        - name: Win ping
-          ansible.windows.win_ping:
-    PLAY2_EOF
-
-    chown -R ec2-user:ec2-user /home/ec2-user/ansible
-
-    sudo -u ec2-user /home/ec2-user/.local/bin/ansible-galaxy collection install ansible.windows
-  EOF
+  user_data                   = local.linux_user_data
+  user_data_replace_on_change = true
 
   root_block_device {
     volume_size           = 30
@@ -299,6 +218,6 @@ resource "aws_instance" "amazon_linux" {
     OS   = "Amazon Linux 2023"
     Role = "Ansible Control Node"
   }
-
+}
   depends_on = [aws_instance.windows]
 }
