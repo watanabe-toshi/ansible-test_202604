@@ -29,12 +29,12 @@ variable "public_subnet_2_cidr" {
 }
 
 variable "my_ip_cidr" {
-  description = "Your public IP in CIDR for AWS SG, example: 203.0.113.10/32"
+  description = "Your public IP in CIDR format, example: 203.0.113.10/32"
   type        = string
 }
 
 variable "rdp_allowed_remote_ip" {
-  description = "Your public IP for Windows Firewall RDP rule, example: 203.0.113.10"
+  description = "Your public IP for Windows Firewall rule, example: 203.0.113.10"
   type        = string
 }
 
@@ -53,4 +53,10 @@ variable "windows_instance_type" {
   description = "Windows instance type"
   type        = string
   default     = "t3.large"
+}
+
+variable "windows_node_names" {
+  description = "Windows hostnames used in Ansible inventory"
+  type        = list(string)
+  default     = ["win1", "win2"]
 }
