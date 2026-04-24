@@ -32,7 +32,7 @@ if (-not $httpsListener) {
 }
 
 New-NetFirewallRule `
-  -DisplayName "WinRM HTTPS 5986" `
+  -DisplayName "Bootstrap WinRM HTTPS 5986" `
   -Direction Inbound `
   -Action Allow `
   -Protocol TCP `
