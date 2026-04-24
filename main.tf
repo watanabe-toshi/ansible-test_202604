@@ -17,12 +17,10 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
-# Latest Amazon Linux 2023 AMI
 data "aws_ssm_parameter" "amazon_linux_ami" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
-# Latest Windows Server 2022 AMI
 data "aws_ssm_parameter" "windows_ami" {
   name = "/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base"
 }
@@ -153,13 +151,21 @@ resource "aws_vpc_security_group_ingress_rule" "windows_winrm_from_linux" {
 locals {
   windows_user_data = templatefile("${path.module}/templates/windows-user-data.ps1.tftpl", {})
 
+  windows_inventory = join("\n", [
+    for name in sort(var.windows_node_names) :
+    "${name} ansible_host=${aws_instance.windows[name].private_ip}"
+  ])
+
   linux_user_data = templatefile("${path.module}/templates/linux-user-data.sh.tftpl", {
-    windows_private_ip    = aws_instance.windows.private_ip
+    windows_inventory     = local.windows_inventory
     rdp_allowed_remote_ip = var.rdp_allowed_remote_ip
+    windows_node_names    = join(" ", sort(var.windows_node_names))
   })
 }
 
 resource "aws_instance" "windows" {
+  for_each = toset(var.windows_node_names)
+
   ami                         = data.aws_ssm_parameter.windows_ami.value
   instance_type               = var.windows_instance_type
   subnet_id                   = aws_subnet.public_2.id
@@ -178,7 +184,7 @@ resource "aws_instance" "windows" {
   }
 
   tags = {
-    Name = "${var.project_name}-windows"
+    Name = "${var.project_name}-${each.key}"
     OS   = "Windows Server 2022"
   }
 }
