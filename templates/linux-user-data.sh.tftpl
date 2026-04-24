@@ -20,7 +20,7 @@ dnf install -y python3 python3-pip git
 sudo -u ec2-user python3 -m pip install --user --upgrade pip
 sudo -u ec2-user python3 -m pip install --user ansible pywinrm
 
-sudo -u ec2-user /home/ec2-user/.local/bin/ansible-galaxy collection install ansible.windows community.windows
+sudo -u ec2-user /home/ec2-user/.local/bin/ansible-galaxy collection install ansible.windows community.windows -p /home/ec2-user/.ansible/collections
 
 cat >/etc/profile.d/ansible_path.sh <<'EOF'
 export PATH="$PATH:/home/ec2-user/.local/bin"
@@ -29,6 +29,7 @@ chmod 644 /etc/profile.d/ansible_path.sh
 
 install -d -o ec2-user -g ec2-user /home/ec2-user/ansible
 install -d -o ec2-user -g ec2-user /home/ec2-user/ansible/vars
+install -d -o ec2-user -g ec2-user /home/ec2-user/ansible/host_vars
 install -d -o ec2-user -g ec2-user /home/ec2-user/ansible/roles/account_policies/tasks
 install -d -o ec2-user -g ec2-user /home/ec2-user/ansible/roles/windows_firewall/tasks
 
@@ -37,11 +38,12 @@ cat >/home/ec2-user/ansible/ansible.cfg <<'EOF'
 inventory = ./inventory.ini
 host_key_checking = False
 interpreter_python = auto_silent
+collections_path = /home/ec2-user/.ansible/collections:/usr/share/ansible/collections
 EOF
 
 cat >/home/ec2-user/ansible/inventory.ini <<EOF
 [windows]
-winhost ansible_host=${windows_private_ip}
+${windows_inventory}
 
 [windows:vars]
 ansible_connection=winrm
@@ -62,6 +64,16 @@ cat >/home/ec2-user/ansible/site.yml <<'EOF'
   roles:
     - account_policies
     - windows_firewall
+EOF
+
+cat >/home/ec2-user/ansible/ping-windows.yml <<'EOF'
+---
+- name: Test Windows connectivity
+  hosts: windows
+  gather_facts: false
+  tasks:
+    - name: Win ping
+      ansible.windows.win_ping:
 EOF
 
 cat >/home/ec2-user/ansible/vars/vars.yml <<EOF
@@ -154,12 +166,21 @@ EOF
 cat >/home/ec2-user/ansible/roles/windows_firewall/tasks/main.yml <<'EOF'
 ---
 - name: Enable Windows Firewall on all profiles
-  ansible.windows.win_firewall:
+  community.windows.win_firewall:
     state: enabled
     profiles:
       - Domain
       - Private
       - Public
+  tags:
+    - firewall
+    - demo
+    - section9
+
+- name: Remove bootstrap WinRM rule
+  community.windows.win_firewall_rule:
+    name: Bootstrap WinRM HTTPS 5986
+    state: absent
   tags:
     - firewall
     - demo
@@ -196,14 +217,62 @@ cat >/home/ec2-user/ansible/roles/windows_firewall/tasks/main.yml <<'EOF'
     - section9
 EOF
 
-cat >/home/ec2-user/ansible/ping-windows.yml <<'EOF'
----
-- name: Test Windows connectivity
-  hosts: windows
-  gather_facts: false
-  tasks:
-    - name: Win ping
-      ansible.windows.win_ping:
+cat >/home/ec2-user/ansible/create-host-vars.sh <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+ANSIBLE_DIR="/home/ec2-user/ansible"
+ANSIBLE_VAULT="/home/ec2-user/.local/bin/ansible-vault"
+
+HOST="${1:-}"
+if [ -z "$HOST" ]; then
+  echo "Usage: $0 <hostname>"
+  echo "Example: $0 win1"
+  exit 1
+fi
+
+mkdir -p "${ANSIBLE_DIR}/host_vars"
+
+read -rsp "Enter Administrator password for ${HOST}: " PASS
+echo
+read -rsp "Re-enter Administrator password for ${HOST}: " PASS2
+echo
+
+if [ "$PASS" != "$PASS2" ]; then
+  echo "Passwords do not match."
+  exit 1
+fi
+
+TMP_FILE=$(mktemp)
+
+"${ANSIBLE_VAULT}" encrypt_string --ask-vault-pass "$PASS" --name ansible_password > "${TMP_FILE}"
+
+mv "${TMP_FILE}" "${ANSIBLE_DIR}/host_vars/${HOST}.yml"
+chmod 600 "${ANSIBLE_DIR}/host_vars/${HOST}.yml"
+
+echo "Created ${ANSIBLE_DIR}/host_vars/${HOST}.yml"
+echo "Run playbooks with: ansible-playbook site.yml --ask-vault-pass"
+EOF
+
+chmod 700 /home/ec2-user/ansible/create-host-vars.sh
+
+cat >/home/ec2-user/ansible/host_vars/README.md <<EOF
+# host_vars
+
+Create one vaulted file per Windows host.
+
+Configured Windows hosts:
+${windows_node_names}
+
+Examples:
+
+./create-host-vars.sh win1
+./create-host-vars.sh win2
+
+Then run:
+
+ansible-playbook ping-windows.yml --ask-vault-pass
+ansible-playbook site.yml --ask-vault-pass
 EOF
 
 chown -R ec2-user:ec2-user /home/ec2-user/ansible
