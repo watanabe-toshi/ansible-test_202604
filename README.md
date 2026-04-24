@@ -143,8 +143,8 @@ Windows インスタンス起動時に、`user_data` によって WinRM over HTT
 aws_region            = "ap-northeast-1"
 project_name          = "demo"
 
-my_ip_cidr            = "203.0.113.10/32"
-rdp_allowed_remote_ip = "203.0.113.10"
+my_ip_cidr            = "111.1.111.11/32"
+rdp_allowed_remote_ip = "111.1.111.11"
 
 key_name              = "demo-key"
 
@@ -393,7 +393,7 @@ reset_lockout_count: 15
 lockout_duration: 15
 
 linux_control_node_ip: "10.0.1.10"
-rdp_allowed_remote_ip: "203.0.113.10"
+rdp_allowed_remote_ip: "111.1.111.11"
 ```
 
 変数を分離している理由は次の通りです。
